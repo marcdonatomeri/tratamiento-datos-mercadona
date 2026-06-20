@@ -1,0 +1,16 @@
+# Corrección de estadísticas de lenguaje (GitHub Linguist).
+# El código real del proyecto está en los archivos .Rmd (RMarkdown / R).
+# Lo siguiente se excluye del cálculo de lenguajes por ser plantillas de
+# terceros o salidas generadas.
+
+# Plantilla LaTeX de MDPI (archivos de terceros, no es código propio)
+"Memoria Proyecto TD/Definitions/**" linguist-vendored
+
+# Informe renderizado: salida generada a partir del .Rmd
+*.html linguist-generated
+
+# Archivos auxiliares de LaTeX
+*.tex linguist-documentation
+*.bst linguist-vendored
+*.cls linguist-vendored
+*.eps linguist-vendored
