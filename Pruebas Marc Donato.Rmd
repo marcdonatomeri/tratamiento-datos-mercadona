@@ -1,0 +1,1138 @@
+---
+title: "Proyecto Tickets TD"
+author: "José Ignacio Calatayud Cuenca, Marc Donato Merí, Manuel Giner Flores, Marc Navarro Montava, Eduardo Oltra Ramos e Isaac Ruiz Quitero"
+date: "2025-03-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Algoritmo del proyecto.
+
+```{r}
+
+# Cargamos las librerías necesarias.
+library(pdftools)
+library(stringr)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+
+```
+
+```{r}
+
+# Función para procesar el contenido de un ticket PDF y extraer información útil.
+procesar_ticket <- function(fichero) {
+  # Extraemos texto del PDF.
+  texto <- pdf_text(fichero)
+  # Separamos el texto por líneas.
+  lineas <- unlist(strsplit(texto, "\n"))
+  
+  # Inicializamos variables del encabezado del ticket.
+  ubicacion <- NA
+  codigo_postal <- NA
+  localidad <- NA
+  telefono_tienda <- NA
+  fecha <- NA
+  hora <- NA
+  op <- NA
+  factura_simplificada <- NA
+  importe_total <- NA
+  N.C <- NA
+  AID <- NA
+  AUT <- NA
+  ARC <- NA
+  tipos_iva <- character()
+  
+  # Creamos el data frame para los productos.
+  productos <- data.frame(
+    Descripcion = character(), 
+    P.Unit = character(), 
+    Peso = character(),
+    Importe = character(),
+    Tipo_peso = character(),
+    factura_simplificada = character(),
+    stringsAsFactors = FALSE
+  )
+  
+  # Inicializamos variables de control.
+  ticket_valido <- FALSE
+  en_productos <- FALSE
+  en_total <- FALSE
+  zona_pesos <- FALSE
+  contador_lineas <- 0
+  
+  # Iteramos por cada línea del PDF.
+  for (linea in lineas) {
+    contador_lineas <- contador_lineas + 1
+    linea <- str_trim(linea)  # Quitamos espacios extra
+    
+    
+    # SECCIÓN GENERAL.
+    
+    
+    # Detectamos que el ticket es válido si aparece "MERCADONA, S.A."
+    if (str_detect(linea, "MERCADONA, S.A.")) {
+      ticket_valido <- TRUE
+    }
+    
+    # Si encontramos MERCADONA, S.A decidimos que el ticket es válido y procedemos a extraer la información.
+    if (ticket_valido) {
+      
+      # Línea 2: dirección de la tienda.
+      if (contador_lineas == 2) {
+        ubicacion <- linea
+      }
+      
+      # Línea 3: código postal y localidad.
+      if (contador_lineas == 3) {
+        partes_3 <- strsplit(linea, " ")[[1]]
+        codigo_postal <- partes_3[1]
+        # Construimos la localidad con el resto de los trozos restantes. Sería útil por ejemplo para "La Rioga".
+        localidad <- ifelse(
+          length(partes_3) >= 2,
+          paste(partes_3[-1],
+          collapse = " "),
+          NA)
+      }
+      
+      # Línea 4: teléfono.
+      if (contador_lineas == 4) {
+        # Quitamos los espacios en blanco del inicio y final de la cadena y substraemos "TELÉFONO:".
+        telefono_tienda <- str_trim(sub("TELÉFONO:", "", linea))
+      }
+      
+      # Línea 5: fecha, hora y operador (OP).
+      if (contador_lineas == 5) {
+        partes_5 <- strsplit(linea, " ")[[1]]
+        fecha <- partes_5[1]
+        hora <- partes_5[2]
+        op_encontrado <- str_extract(linea, "OP:\\s*\\d+")
+        # Comprueba que halla encontrado el op y solo extrae la parte numérica.
+        op <- ifelse(
+          !is.na(op_encontrado),
+          str_extract(op_encontrado,
+          "[[:digit:]]+"),
+          NA)
+      }
+      
+      # Línea 6: número de factura simplificada.
+      if (contador_lineas == 6) {
+        # Quitamos los espacios en blanco del inicio y final de la cadena y substraemos "FACTURA SIMPLIFICADA:".
+        factura_simplificada <- str_trim(sub("FACTURA SIMPLIFICADA:", "", linea))
+      }
+      
+      # Detección del inicio de productos.
+      if (str_detect(linea, "^[ ]*Descripción[ ]+P[.] Unit[ ]+Importe[ ]*$")) {
+        en_productos <- TRUE
+        next
+      }
+      
+      
+      # SECCIÓN PRODUCTOS.
+      
+      
+      # Si esta en productos y no detecta la palabra TOTAL (€).
+      if (en_productos && !str_detect(linea, "TOTAL [(]€[)]")) {
+        # Línea típica: cantidad, descripción, precio unitario e importe total.
+        if (str_detect(linea, "^\\d+\\s+.+\\s+\\d+,\\d{2}\\s+\\d+,\\d{2}$")) {
+          matches <- str_match(linea, "^(\\d+)\\s+(.+)\\s+(\\d+,\\d{2})\\s+(\\d+,\\d{2})$")
+          cantidad <- as.numeric(matches[1, 2])
+          descripcion <- matches[1, 3]
+          precio_unitario <- matches[1, 4]
+          importe <- matches[1, 5]
+          peso <- NA
+          for (i in 1:cantidad) {
+            temp_row <- data.frame(
+              Descripcion = descripcion,
+              P.Unit = precio_unitario,
+              Peso = peso,
+              Importe = NA,
+              Tipo_peso = NA,
+              factura_simplificada = factura_simplificada,
+              stringsAsFactors = FALSE
+            )
+            productos <- rbind(productos, temp_row)
+          }
+        }
+        # Línea con cantidad, descripción e importe directo.
+        else if (str_detect(linea, "^(\\d+)\\s+(.+?)\\s+(\\d+,\\d{2})$")) {
+          matches <- str_match(linea, "^(\\d+)\\s+(.+?)\\s+(\\d+,\\d{2})$")
+          cantidad <- as.numeric(matches[1, 2])
+          descripcion <- matches[1, 3]
+          precio_unitario <- matches[1, 4]
+          peso <- NA
+          # En este caso asignamos el mismo valor a P.Unit e Importe.
+          for (i in 1:cantidad) {
+            temp_row <- data.frame(
+              Descripcion = descripcion,
+              P.Unit = precio_unitario,
+              Peso = peso,
+              Importe = NA,
+              Tipo_peso = NA,
+              factura_simplificada = factura_simplificada,
+              stringsAsFactors = FALSE
+            )
+            productos <- rbind(productos, temp_row)
+          }
+        }
+        
+        # Línea que detecta productos de pescadería, verduras y frutas.
+        else if ( str_detect(linea, "^PESCADO$") || zona_pesos == TRUE ||
+                  str_detect(linea, "^\\d+(?:\\.\\d+)?\\s+[A-ZÁÉÍÓÚÜÑ]+(?:\\s+[A-ZÁÉÍÓÚÜÑ]+)*$") ||
+                  str_detect(linea, "^[A-ZÁÉÍÓÚÜÑ]+(?:\\s+[A-ZÁÉÍÓÚÜÑ]+)*$") ) {
+          
+          if (str_detect(linea, "^[A-ZÁÉÍÓÚÜÑ]+(?:\\s+[A-ZÁÉÍÓÚÜÑ]+)*$")) {
+            descripcion <- linea
+            zona_pesos <- TRUE
+            tipo <- "Pescado"
+          } 
+          else if (str_detect(linea, "^\\d+(?:\\.\\d+)?\\s+[A-ZÁÉÍÓÚÜÑ]+(?:\\s+[A-ZÁÉÍÓÚÜÑ]+)*$")) {
+            matches <- str_match(linea, "^(\\d+(?:\\.\\d+)?)\\s+([A-ZÁÉÍÓÚÜÑ]+(?:\\s+[A-ZÁÉÍÓÚÜÑ]+)*)$")
+            if (!is.na(matches[1, 1])) {
+              cantidad <- as.numeric(matches[1, 2])
+              descripcion <- matches[1, 3]
+              zona_pesos <- TRUE
+              tipo <- "Verdura y Frutas"
+            }
+          }
+          else if (str_detect(linea, "^([0-9]+,[0-9]+)\\s+kg\\s+([0-9]+,[0-9]+) €/kg\\s+([0-9]+,[0-9]+)$")) {
+            matches <- str_match(linea, "^([0-9]+,[0-9]+)\\s+kg\\s+([0-9]+,[0-9]+) €/kg\\s+([0-9]+,[0-9]+)$")
+            peso <- matches[1, 2]  # Extraemos el peso sin "kg"
+            precio_por_kg <- matches[1, 3]  # Extraemos el precio sin "€/kg"
+            importe <- matches[1, 4]  # Extraemos el importe total
+            
+            temp_row <- data.frame(
+              Descripcion = descripcion,
+              Peso = peso,
+              P.Unit = precio_por_kg,
+              Importe = importe,
+              Tipo_peso = tipo,
+              factura_simplificada = factura_simplificada,
+              stringsAsFactors = FALSE
+            )
+            productos <- rbind(productos, temp_row)
+            zona_pesos <- FALSE
+          }
+        }
+      }
+      
+      # Fin de productos: aparece la línea de TOTAL (€).
+      if (str_detect(linea, "TOTAL \\(€\\)")) {
+        en_productos <- FALSE
+        en_total <- TRUE
+        importe_total <- str_extract(linea, "\\d+,\\d{2}")
+      }
+      
+      # Sección de totales, impuestos y códigos de pago.
+      if (en_total) {
+        if (str_detect(linea, "N\\.C:")) {
+          N.C <- str_extract(linea, "N\\.C:\\s*(\\d+)") %>% 
+            str_remove("N\\.C:\\s*")
+        }
+        if (str_detect(linea, "AID:")) {
+          AID <- str_extract(linea, "AID:\\s*(\\S+)") %>% 
+            str_remove("AID:\\s*")
+        }
+        if (str_detect(linea, "AUT:")) {
+          AUT <- str_extract(linea, "AUT:\\s*(\\d+)") %>% 
+            str_remove("AUT:\\s*")
+        }
+        if (str_detect(linea, "ARC:")) {
+          ARC <- str_extract(linea, "ARC:\\s*(\\d+)") %>% 
+            str_remove("ARC:\\s*")
+        }
+        
+        # Detección de los tipos de IVA (se extraen solo los porcentajes).
+        if (str_detect(linea, "\\d+%")) {
+          iva_matches <- str_match_all(linea, "(\\d+%)")[[1]]
+          if (nrow(iva_matches) > 0) {
+            tipos_iva <- c(tipos_iva, iva_matches[, 1])
+          }
+        }
+      }
+    }
+  }
+  
+  # Unificamos las cadenas de IVA detectadas, eliminando duplicados.
+  tipos_iva <- paste(unique(tipos_iva), collapse = ", ")
+  
+  # Creamos el data frame con la información general del ticket.
+  ticket_df <- data.frame(
+    archivo = basename(fichero),
+    ubicacion = ubicacion,
+    codigo_postal = codigo_postal,
+    localidad = localidad,
+    telefono_tienda = telefono_tienda,
+    fecha = fecha,
+    hora = hora,
+    op = op,
+    factura_simplificada = factura_simplificada,
+    importe_total = importe_total,
+    N.C = N.C,
+    AID = AID,
+    AUT = AUT,
+    ARC = ARC,
+    tipos_iva = tipos_iva,
+    stringsAsFactors = FALSE
+  )
+  
+  # Retornamos una lista con los dos data frames.
+  return(list(ticket = ticket_df, productos = productos))
+}
+
+```
+
+```{r}
+
+# Creamos una lista para el procesamiento de todos los tickets.
+lista_resultados <- list()
+
+# Obtenemos lista de archivos PDF.
+archivos_pdf <- list.files(
+  "./data", 
+  pattern = "^[0-9]{8}\\s+Mercadona.*\\.pdf$", 
+  full.names = TRUE, 
+  ignore.case = TRUE
+)
+
+# Verificamos que hay archivos.
+if (length(archivos_pdf) == 0) {
+  stop("No se encontraron archivos PDF en el directorio ./data")
+}
+
+# Procesamos cada archivo.
+for (pdf in archivos_pdf) {
+  tryCatch({
+    resultado <- procesar_ticket(pdf)
+    lista_resultados[[length(lista_resultados) + 1]] <- resultado
+  }, error = function(e) {
+    message("Error procesando ", pdf, ": ", e$message)
+  })
+}
+
+# Combinamos todos los resultados.
+tickets_global <- bind_rows(lapply(lista_resultados, function(x) x$ticket))
+productos_global <- bind_rows(lapply(lista_resultados, function(x) x$productos))
+
+# Pasamos las columnas de productos_global a númerico.
+
+productos_global <- productos_global %>%
+  mutate(
+    Peso = as.numeric(gsub(",", ".", Peso)),
+    P.Unit = as.numeric(gsub(",", ".", P.Unit)),
+    Importe = as.numeric(gsub(",", ".", Importe))
+  )
+
+# Visualizamos los resultados.
+#View(tickets_global)
+#View(productos_global)
+
+# Guardamos los resultados en un CSV, por si debemos de exportarlos en algún momento.
+write.csv(tickets_global, "tickets_global.csv", row.names = FALSE)
+write.csv(productos_global, "productos_global.csv", row.names = FALSE)
+
+```
+
+
+# Introducción.
+
+Este proyecto tiene como objetivo desarrollar un algoritmo en el lenguaje de programación R capaz de realizar un análisis exhaustivo de tickets de compra en formato PDF, específicamente de los obtenidos en establecimientos de Mercadona. A través de este proceso, se busca extraer la información relevante de cada ticket y convertirla en un formato estructurado, como lo es el data frame, que facilita su análisis y manipulación.
+
+La importancia de este proyecto radica en la posibilidad de automatizar el proceso de recopilación de datos de tickets en formato PDF, que a menudo son difíciles de manejar debido a su estructura no estandarizada. El uso de R para esta tarea ofrece una gran flexibilidad y potencia a la hora de trabajar con datos y aplicar técnicas de análisis estadístico y visualización.
+
+El enfoque del proyecto se basa en la creación de un algoritmo eficiente que sea capaz de leer, interpretar y extraer información clave de los tickets, tales como: fecha de la compra, productos adquiridos, cantidades, precios y, especialmente, el impacto de factores como el IVA en el precio final de los productos. Este análisis podría proporcionar valiosas perspectivas sobre cómo ha afectado la evolución del IVA a los precios de productos específicos, lo que permitiría realizar comparativas a lo largo del tiempo.
+
+De este modo, será posible responder a preguntas clave relacionadas con la evolución de precios, las preferencias de consumo y los patrones de compra, tales como:
+
+Aquellas planteadas como comunes.
+
+  -   ¿Cuáles son los 5 productos, de los vendidos por unidades, con más ventas? ¿Cuántas unidades de cada uno se han vendido?
+
+```{r}
+
+# No queremos contar a las bolsas de plástico y Parking por obvias razones.
+
+productos_ud_masvendidos <- productos_global %>%
+  filter(is.na(Peso)) %>%
+  filter(!Descripcion %in% c("BOLSA PLASTICO", "PARKING")) %>%
+  mutate(Descripcion = str_trim(Descripcion)) %>%
+  count(Descripcion, sort = TRUE, name = "n_apariciones") %>%
+  head(5)
+
+productos_ud_masvendidos
+
+```
+
+
+  -   Si consideramos la categoría de frutas y verduras, ¿cuáles son los 5 productos más vendidos? ¿Cuántos kilos se han vendido de cada uno de estos productos?
+
+
+```{r}
+
+productos_fv_masvendidos_nombres <- productos_global %>%
+  filter(!is.na(Peso), Tipo_peso == "Verdura y Frutas") %>%
+  count(Descripcion, sort = TRUE) %>%
+  slice_head(n = 5) %>%
+  pull(Descripcion)
+
+productos_fv_masvendidos_nombres
+
+productos_fv_masvendidos <- productos_global %>%
+  filter(!is.na(Peso)) %>%
+  filter(Descripcion %in% productos_fv_masvendidos_nombres) %>%
+  group_by(Descripcion) %>%
+  summarise(Peso_total_kg = sum(Peso, na.rm = TRUE)) %>%
+  arrange(desc(Peso_total_kg))
+
+productos_fv_masvendidos
+
+```
+  
+  -   Si consideramos la categoría de pescado, ¿cuáles son los 5 productos más vendidos? ¿Cuántos kilos se han vendido de cada uno de estos productos?
+
+```{r}
+
+# Nos aseguramos antes de que Peso sea numérico:
+productos_global <- productos_global %>%
+  mutate(Peso = str_replace_all(Peso, ",", ".") %>% as.numeric())
+
+# 1) Los 5 pescados más vendidos (por conteo), excluyendo otras categorías
+productos_p_masvendidos_nombres <- productos_global %>%
+  filter(
+    !is.na(Peso),
+    Tipo_peso == "Pescado"
+  ) %>%
+  count(Descripcion, sort = TRUE) %>%
+  slice_head(n = 5) %>%
+  pull(Descripcion)
+
+# 2) Sumo su peso total, asegurándome de volver a filtrar pescado
+productos_p_masvendidos <- productos_global %>%
+  filter(
+    !is.na(Peso),
+    Tipo_peso == "Pescado",
+    Descripcion %in% productos_p_masvendidos_nombres
+  ) %>%
+  group_by(Descripcion) %>%
+  summarise(Peso_total_kg = sum(Peso, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(Peso_total_kg))
+
+productos_p_masvendidos
+
+```
+
+  -   Muestra mediante un gráfico de líneas cómo ha variado el precio por kilo de las bananas y los plátanos en los tickets disponibles, a lo largo del tiempo.
+
+```{r}
+
+# Filtramos solo bananas y plátanos, y calculamos el precio por kilo.
+bananas_platanos <- productos_global %>%
+  # Estandarizamos a mayúsculas para captar variantes.
+  mutate(Descripcion = str_to_upper(Descripcion)) %>%
+  filter(
+    str_detect(Descripcion, "\\b(PLÁTANO|PLATANO|BANANA)\\b") &
+    !str_detect(Descripcion, "MANZANA")
+  ) %>%
+  # Calculamos el precio por kg.
+  mutate(precio_kg = Importe / Peso) %>%
+  # Unimos con la fecha del ticket.
+  left_join(
+    tickets_global %>% 
+      select(factura_simplificada, fecha),
+    by = "factura_simplificada"
+  ) %>%
+  # Convierto fecha a Date
+  mutate(fecha = dmy(fecha)) %>%
+  filter(!is.na(fecha))
+
+# Agrupamos por fecha y producto, calculamos precio medio por día.
+serie_temporal <- bananas_platanos %>%
+  group_by(fecha, Descripcion) %>%
+  summarise(precio_medio_kg = mean(precio_kg, na.rm = TRUE), .groups = "drop") %>%
+  arrange(fecha)
+
+# Realizamos el gráfico de líneas.
+ggplot(serie_temporal, aes(x = fecha, y = precio_medio_kg, color = Descripcion)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b %Y") +
+  labs(
+    title = "Evolución del precio por kilo de bananas y plátanos",
+    x = "Fecha",
+    y = "Precio medio (€ / kg)",
+    color = "Producto"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5)
+  )
+
+```
+
+  -   ¿Cuál es la procedencia de los tickets? ¿Qué ciudad o pueblo tiene un mayor número de tickets?
+
+```{r}
+
+tickets_global %>% 
+  count(localidad, sort = TRUE) %>%
+  head(10)
+
+```
+
+Como podemos observar Valencia es la ciudad con más tickets.
+
+  -   Muestra mediante un diagrama el número de tickets recogidos cada día de la semana. ¿Si tuvieses que cerrar un día entre semana, qué día lo harías?
+  
+```{r}
+
+# Contamos los tickets por día de la semana.
+tickets_semana <- tickets_global %>%
+  mutate( dia_semana = wday(fecha, label = TRUE, abbr = FALSE, week_start = 1)) %>%
+  count(dia_semana, name = "tickets") 
+
+# Creamos el diagrama de barras.
+ggplot(tickets_semana, aes(x = dia_semana, y = tickets)) +
+  geom_col() +
+  labs(
+    title = "Tickets recogidos según día de la semana",
+    x = "Día de la semana",
+    y = "Número de tickets")
+
+```
+
+  
+Aquellas planteadas por nuestro grupo.
+
+-   ¿Cuánto ha subido el precio de la carne en el último año?
+
+```{r}
+# Filtrar productos cárnicos (ejemplos representativos)
+productos_carne <- c("FILETE DE TERNERA", "SOLOMILLO DE CERDO", "POLLO ENTERO", "LOMO DE CERDO", 
+                    "CHULETAS DE CERDO", "CARNE PICADA", "HAMBURGUESAS DE TERNERA")
+
+# Obtener datos de productos cárnicos
+carne_data <- productos_global %>%
+  filter(str_detect(toupper(Descripcion), paste(productos_carne, collapse = "|"))) %>%
+  left_join(tickets_global, by = "factura_simplificada") %>%
+  mutate(
+    fecha = as.Date(fecha, format = "%d/%m/%Y"),
+    P.Unit = as.numeric(P.Unit),
+    mes = floor_date(fecha, "month")
+  ) %>%
+  filter(fecha >= Sys.Date() - years(1))  # Último año
+
+# Calcular variación de precios
+precio_promedio <- carne_data %>%
+  group_by(mes, Producto = Descripcion) %>%
+  summarise(Precio_Promedio = mean(P.Unit, na.rm = TRUE), .groups = "drop") %>%
+  arrange(Producto, mes)
+
+# Calcular porcentaje de cambio
+variacion <- precio_promedio %>%
+  group_by(Producto) %>%
+  summarise(
+    Precio_Inicial = first(Precio_Promedio),
+    Precio_Final = last(Precio_Promedio),
+    Variacion_Porcentual = (Precio_Final - Precio_Inicial) / Precio_Inicial * 100
+  )
+
+# Mostrar resultados
+variacion %>% arrange(desc(Variacion_Porcentual))
+
+# Crear gráfico de evolución
+ggplot(precio_promedio, aes(x = mes, y = Precio_Promedio, color = Producto)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  labs(
+    title = "Evolución del Precio de Productos Cárnicos en el Último Año",
+    x = "Mes",
+    y = "Precio Promedio (€/kg)",
+    color = "Producto"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  scale_y_continuous(labels = scales::dollar_format(prefix = "", suffix = "€")) +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "1 month")
+
+```
+-   ¿Qué marca de lacteos es la más económica en Mercadona?
+
+```{r}
+# Filtrar productos de leche
+productos_leche <- c("LECHE", "LÁCTEO", "YOGUR", "CREMA", "LECHE ENTERA", "LECHE SEMI-ENTERA", "YOGURT")
+
+productos_de_leche <- productos_global %>%
+  filter(str_detect(toupper(Descripcion), paste(productos_leche, collapse = "|"))) %>%
+  mutate(
+    Marca = str_extract(Descripcion, "[A-Za-zÁÉÍÓÚÑáéíóúñ\\s]+")  # Extraer la marca del nombre del producto
+  )
+
+# Agrupar por marca y producto, luego calcular el precio máximo, mínimo y medio
+leche_por_marca <- productos_de_leche %>%
+  group_by(Marca, Descripcion) %>% 
+  summarise(
+    Precio_Maximo = max(P.Unit, na.rm = TRUE),  # Precio más alto del producto
+    Precio_Minimo = min(P.Unit, na.rm = TRUE),  # Precio más bajo del producto
+    Precio_Medio = mean(c(Precio_Maximo, Precio_Minimo), na.rm = TRUE),  # Precio medio entre el máximo y el mínimo
+    .groups = "drop"
+  ) %>%
+  group_by(Marca) %>%
+  summarise(
+    Precio_Maximo_Marca = max(Precio_Maximo, na.rm = TRUE),  # Máximo precio de cualquier producto de la marca
+    Precio_Minimo_Marca = min(Precio_Minimo, na.rm = TRUE),  # Mínimo precio de cualquier producto de la marca
+    Precio_Medio_Marca = mean(Precio_Medio, na.rm = TRUE),  # Precio medio entre los productos de la marca
+    .groups = "drop"
+  ) %>%
+  arrange(Precio_Medio_Marca)  # Ordenamos por el precio medio de cada marca
+
+# Mostrar la tabla resultante
+leche_por_marca
+
+```
+-   ¿Cuál es el chocolate más comprado por los consumidores?
+
+```{r}
+# Primero identificamos los productos de chocolate en la lista
+productos_chocolate <- productos_global %>%
+  filter(str_detect(toupper(Descripcion), 
+         "CHOCO|CHOCOLATE|CACAO|COBERTURA|TABLETA")) %>%
+  mutate(Descripcion = str_trim(Descripcion))
+
+# Ahora contamos las compras por tipo de chocolate
+chocolates_populares <- productos_chocolate %>%
+  group_by(Producto = Descripcion) %>%
+  summarise(
+    Veces_Comprado = n(),
+    Cantidad_Total = sum(as.numeric(Peso), na.rm = TRUE),
+    Precio_Promedio = mean(as.numeric(P.Unit), na.rm = TRUE)
+  ) %>%
+  arrange(desc(Veces_Comprado))
+
+# Mostrar los 10 chocolates más comprados
+head(chocolates_populares, 10)
+
+# Gráfico de barras de los chocolates más comprados
+ggplot(head(chocolates_populares, 10), 
+       aes(x = reorder(Producto, Veces_Comprado), y = Veces_Comprado)) +
+  geom_bar(stat = "identity", fill = "#8B4513") +
+  coord_flip() +
+  labs(
+    title = "Los 10 Chocolates Más Comprados",
+    x = "Producto",
+    y = "Número de veces comprado"
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 8))
+```
+  -   ¿Qué carne tiene mejor relación calidad-precio: la de carnicería o la envasada al vacío?
+
+-   ¿Qué productos han subido más de precio tras los cambios en el IVA?
+
+```{r}
+# Crear tabla de productos únicos (1 registro por producto)
+productos_unicos <- productos_global %>%
+  group_by(Descripcion) %>%
+  summarise(
+    P.Unit = first(P.Unit),  # Tomamos el primer precio encontrado para cada producto
+    .groups = 'drop'
+  )
+
+# Calcular precios con y sin IVA para todos los productos únicos
+resultados_completos <- productos_unicos %>%
+  mutate(
+    IVA_aplicado = 21,  # Asignamos 21% a todos
+    Precio_sin_IVA = round(P.Unit / 1.21, 2),
+    Diferencia_IVA = round(P.Unit - Precio_sin_IVA, 2)
+  ) %>%
+  arrange(desc(Diferencia_IVA)) %>%
+  select(
+    Producto = Descripcion,
+    Precio_con_IVA = P.Unit,
+    Precio_sin_IVA,
+    Diferencia_IVA,
+  )
+
+# Mostrar todos los productos ordenados por mayor diferencia de IVA
+resultados_completos
+```
+
+  -   ¿Cómo varían los precios de frutas y verduras según la temporada?
+
+```{r}
+datos_completos <- productos_global %>%
+  left_join(tickets_global %>% select(factura_simplificada, fecha), 
+            by = "factura_simplificada")
+
+datos_completos %>% 
+  filter(Tipo_peso == "Verdura y Frutas") %>%
+  mutate(mes = month(dmy(fecha)),
+         temporada = case_when(
+           mes %in% 3:5 ~ "Primavera",
+           mes %in% 6:8 ~ "Verano",
+           mes %in% 9:11 ~ "Otoño",
+           TRUE ~ "Invierno"
+         )) %>%
+  ggplot(aes(x = temporada, y = P.Unit)) +
+  geom_boxplot() +
+  labs(title = "Precio frutas/verduras por temporada", 
+       x = "Temporada", 
+       y = "Precio (€/kg)")
+```
+
+  -   ¿Qué categoría de productos representa el mayor gasto por ticket?
+
+```{r}
+
+productos_global %>%
+  left_join(tickets_global %>% select(factura_simplificada), by = "factura_simplificada") %>%
+  mutate(
+    Categoria = ifelse(is.na(Tipo_peso), "Productos normales", Tipo_peso),
+    Importe = ifelse(is.na(Importe), P.Unit, Importe)
+  ) %>%
+  group_by(factura_simplificada, Categoria) %>%
+  summarise(Gasto_categoria = sum(Importe), .groups = "drop") %>%
+  group_by(Categoria) %>%
+  summarise(Promedio = mean(Gasto_categoria)) %>%  # Promedio del gasto por ticket
+  ggplot(aes(reorder(Categoria, -Promedio), Promedio)) +
+  geom_col(fill = "blue") +
+  labs(title = "Gasto PROMEDIO por ticket y categoría")
+
+```
+
+  -   ¿Qué marca de café prefieren los consumidores?
+
+```{r}
+
+cafes <- productos_global %>%
+  filter(str_detect(tolower(Descripcion), "café")) %>%
+  count(Descripcion, sort = TRUE)
+
+cafes
+```
+
+  -   ¿Hay diferencia de precios entre el mismo producto comprado en diferentes fechas?
+
+```{r}
+
+promedio_productos <- productos_global %>%
+  group_by(factura_simplificada) %>%
+  summarise(n_productos = n()) %>%
+  summarise(media = mean(n_productos))
+
+promedio_productos
+```
+
+  -   ¿Cuántos productos por ticket se compran en promedio?
+
+```{r}
+
+productos_por_ticket <- productos_global %>% 
+  group_by(factura_simplificada) %>% 
+  tally()
+
+mean(productos_por_ticket$n)
+
+```
+
+  - ¿Cuál es el día de la semana que Mercadona factura más?
+
+```{r}
+# Debemos de ver en que dia de la semana se .
+# Hay que convertir la fecha en dias de la semana y el importe total 
+# en numerico cambiando la coma por el punto
+
+tickets <- tickets_global %>% mutate(fecha = as.Date(fecha, format = "%d/%m/%Y"), 
+                                     dia_semana = weekdays(fecha),
+                                     importe_total = as.numeric(gsub(",", ".", importe_total))) %>% 
+  select(dia_semana, importe_total) %>%   # Cogemos unicamente estas dos columnas, ya que las otras no son necesarias
+  group_by(dia_semana) %>%    # Agrupamos por dias de la semana para calcular el importe de cada dia.
+  summarise(total_dia = sum(importe_total, na.rm = TRUE)) %>% # Sumatorio que sume todos los importes totales por dias
+  arrange(desc(total_dia)) # Ordenamso de mayor a menor el data.frame
+
+cat("El dia de la semana donde Mercadona a recaudado más es:",tickets$dia_semana[1])
+
+# Si queremos ver la tabla de valores:
+print(tickets)
+```
+
+
+- ¿En qué estaciones del año se consume más pescado?
+
+```{r}
+# Tenemos que calcular el mes del ticket y incluirlo en su estación correspondiente:
+
+meses <- tickets_global %>% 
+  mutate(mes = as.Date(fecha, format = "%d/%m/%Y"), # Convertimos en formato fecha la fecha.
+         mes = month(mes)) %>% # De fecha a mes.
+  select(mes, factura_simplificada) %>% # Seleccionamos solamente las columnas que necesitamos. 
+  mutate(estacion = ifelse(mes %in% c(12, 1, 2), "Invierno",# Columna estaciones con condiciones para separar.
+                           ifelse(mes %in% c(3:5), "Primavera",
+                                  ifelse(mes %in% c(6:8), "Verano", "Otoño")))) %>%
+  group_by(estacion) %>% # Agrupamos por estaciones
+  select(estacion, factura_simplificada) # Seleccionamos las columnas que nos interesan
+
+estacion_pescado <- inner_join(meses, productos_global, by = "factura_simplificada") %>%
+  filter(!is.na(Importe)) %>%
+  filter(Tipo_peso == "Pescado") %>%
+  group_by(estacion) %>%
+  summarise(total_pescado = n()) %>%
+  arrange(desc(total_pescado))
+
+print(estacion_pescado)
+
+#Como podemos observar las estaciones donde mas se consume pescado son invierno y primavera.
+```
+
+
+  -   ¿Cuál es el importe total promedio de una compra mensual dependiendo del mes?
+
+```{r}
+# Utilizaremos el data frame "meses" con algunos cambios.
+# Transformación del data frame con cálculo de importe promedio mensual
+meses <- tickets_global %>% 
+  mutate(fecha = as.Date(fecha, format = "%d/%m/%Y"),  # Convertimos la fecha a formato Date
+         mes = month(fecha),  # Extraemos el número del mes
+         importe_total_num = as.numeric(gsub(",", ".", importe_total))) %>%  # Convertimos el importe a numérico
+  group_by(mes) %>% 
+  summarise(media_importe = mean(importe_total_num, na.rm = TRUE))  # Calculamos el promedio por mes
+
+# Convertimos la columna mes a factor con niveles explícitos para que ggplot ordene correctamente
+meses <- meses %>% 
+  mutate(mes = factor(mes, levels = 1:12, labels = c("Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+                                                      "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"))) %>% arrange(desc(media_importe))
+
+# Generamos el gráfico de barras con ggplot
+ggplot(meses, aes(x = mes, y = media_importe, fill = mes)) + 
+  geom_bar(stat = "identity") +  # Se usa 'stat = "identity"' para indicar que los valores de Y ya están calculados
+  labs(title = "Importe promedio de compras mensuales",
+       x = "Mes",
+       y = "Importe promedio (€)") +
+  theme_minimal() +  # Se usa un tema limpio y moderno
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))  # Rotamos los nombres de los meses para mejor legibilidad
+
+print(meses) # Mostramos la tabla con los valores exactos.
+```
+
+
+-   ¿Cuáles son los productos que Mercadona podria quitar por su baja demanda?
+
+```{r}
+# Calculamos la frecuencia de cada producto en el conjunto de datos
+productos_frecuencia <- productos_global %>%
+  group_by(Descripcion) %>%
+  summarise(frecuencia = n()) %>%
+  arrange(frecuencia)
+
+# Seleccionamos los productos con menor frecuencia (baja demanda)
+productos_baja_demanda <- productos_frecuencia %>%
+  filter(frecuencia <= quantile(frecuencia, 0.25))  # Tomamos el 25% menos comprado
+
+# Mostramos los productos con baja demanda
+print(productos_baja_demanda)
+
+# Todos estos productos se han comprado solamente una vez en total.
+
+```
+
+
+
+- ¿Cual es el pescado y hortaliza (verdura o fruta) más caro?
+
+```{r}
+# Filtramos los productos de pescado y ordenamos por precio unitario descendente
+productos_pescado_mas_caro <- productos_global %>%
+  filter(!is.na(Tipo_peso)) %>%  # Eliminamos valores NA en Tipo_peso
+  filter(Tipo_peso == "Pescado") %>%  # Filtramos solo productos que sean pescado
+  arrange(desc(P.Unit)) %>%  # Ordenamos por precio unitario de mayor a menor
+  select(Descripcion, P.Unit)  # Seleccionamos solo las columnas relevantes
+
+# Mostramos el pescado más caro
+head(productos_pescado_mas_caro, 1)  # Extraemos solo el producto más caro
+
+# Filtramos los productos de verduras y frutas (hortalizas)
+productos_verdura_mas_caro <- productos_global %>%
+  filter(!is.na(Tipo_peso)) %>%  # Eliminamos valores NA en Tipo_peso
+  filter(Tipo_peso != "Pescado") %>%  # Filtramos los productos que NO sean pescado
+  arrange(desc(P.Unit)) %>%  # Ordenamos por precio unitario de mayor a menor
+  select(Descripcion, P.Unit)  # Seleccionamos solo las columnas relevantes
+
+# Mostramos la verdura/fruta más cara
+head(productos_verdura_mas_caro, 1)  # Extraemos solo el producto más caro
+
+
+# El pescado más caro es la quisquilla mediana con un precio de 27,9 €/kg
+# La verdura/fruta más cara es el aguacate con un precio de 5,5 €/kg
+
+```
+
+
+  -   ¿Qué productos tienen mayor carga impositiva por IVA?
+
+```{r}
+
+# Procesamos todos los tickets y unimos productos, agregando el tipo de IVA a cada producto
+productos_global <- archivos_pdf %>%
+  lapply(function(fichero) {
+    resultado <- procesar_ticket(fichero)
+    
+    # Añadimos el tipo de IVA al data frame de productos
+    productos <- resultado$productos
+    productos$tipos_iva <- resultado$ticket$tipos_iva
+    
+    return(productos)
+  }) %>%
+  bind_rows()
+
+# Aseguramos que el campo IVA esté en un solo número (ej. 21%)
+productos_global <- productos_global %>%
+  filter(!is.na(Importe), !is.na(tipos_iva)) %>%
+  mutate(
+    # Nos quedamos con el IVA más alto del campo (por si tiene "10%, 4%, 21%")
+    max_iva = tipos_iva %>%
+      str_extract_all("\\d+%") %>%
+      sapply(function(x) max(as.numeric(str_remove(x, "%")))),
+    
+    # Convertimos Importe a número (si estaba con coma)
+    Importe = as.numeric(str_replace(Importe, ",", "."))
+  )
+
+# Agrupamos los productos por descripción y max_iva, y sumamos los importes
+productos_por_iva <- productos_global %>%
+  group_by(Descripcion, max_iva) %>%
+  summarise(
+    Total_con_IVA = sum(Importe, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(max_iva), desc(Total_con_IVA))  # Ordenamos por mayor carga impositiva y total
+
+# Mostramos los productos con mayor carga impositiva
+productos_por_iva 
+
+```
+  -   ¿Qué tipo de pan se compra con más frecuencia?
+
+```{r}
+
+# Filtramos solo productos que contengan "PAN" en su descripción (ignorando mayúsculas/minúsculas)
+pan_mas_frecuente <- productos_global %>%
+  filter(grepl("PAN", Descripcion, ignore.case = TRUE)) %>%  # Filtra productos relacionados con pan
+  count(Descripcion, sort = TRUE) %>%                        # Cuenta cada tipo de pan
+  slice_head(n = 1)                                          # Selecciona el más frecuente
+
+pan_mas_frecuente
+
+```
+
+  -   ¿Los consumidores compran más productos frescos o envasados?
+  
+```{r}
+
+# Contamos los productos frescos y envasados según la descripción
+productos_comprados <- productos_global %>%
+  mutate(tipo_producto = case_when(
+    grepl("fresco", Descripcion, ignore.case = TRUE) ~ "Fresco",
+    grepl("envasado", Descripcion, ignore.case = TRUE) ~ "Envasado",
+    TRUE ~ "Otro"
+  )) %>%
+  count(tipo_producto) %>%  # Contamos cada tipo
+  filter(tipo_producto != "Otro")  # Filtramos los casos que no sean Fresco ni Envasado
+
+productos_comprados
+
+```
+
+  -   ¿Se observa una tendencia de aumento o disminución en la compra de productos ecológicos?
+  
+```{r}
+
+# 1) Filtramos productos ecológicos (ó/acento y organico/orgánico)
+productos_ecologicos <- productos_global %>%
+  filter(
+    grepl("ecol[óo]gico|bio|org[áa]nico", Descripcion, ignore.case = TRUE)
+  ) %>%
+  # 2) Unimos sólo la fecha del ticket (ajusta 'factura_simplificada' si tu key es otra)
+  left_join(
+    tickets_global %>% select(factura_simplificada, fecha),
+    by = "factura_simplificada"
+  ) %>%
+  filter(!is.na(fecha)) %>% 
+  # 3) Parsiado seguro de fecha
+  mutate(fecha = dmy(fecha),
+         fecha_anno_mes = format(fecha, "%Y-%m"))
+
+# 4) Contamos por mes
+tendencia_ecologico <- productos_ecologicos %>%
+  count(fecha_anno_mes) %>%
+  arrange(fecha_anno_mes)
+
+# 5) Si hay datos, gráfico:
+if(nrow(tendencia_ecologico) > 0) {
+  ggplot(tendencia_ecologico,
+         aes(x = as.Date(paste0(fecha_anno_mes, "-01")), y = n)) +
+    geom_line(size = 1) +
+    geom_point(size = 2) +
+    scale_x_date(date_breaks = "1 month", date_labels = "%Y-%m") +
+    labs(
+      title = "Tendencia mensual de compras de productos ecológicos",
+      x = "Mes",
+      y = "Número de productos ecológicos"
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+} else {
+  message("No se han encontrado productos ecológicos con esas claves en Descripcion.")
+}
+
+```
+
+  -   ¿Qué porcentaje del total del ticket corresponde al IVA en promedio?
+  
+```{r, eval=FALSE}
+
+# Primero, calculamos el porcentaje de IVA para cada ticket.
+ticket_con_iva <- tickets_global %>%
+  left_join(productos_global, by = "archivo") %>%
+  mutate(
+    iva_total = ifelse(!is.na(tipos_iva), as.numeric(gsub(",", ".", tipos_iva)), 0),  # Convertimos tipos_iva en valores numéricos
+    porcentaje_iva = (iva_total / importe_total) * 100  # Calculamos el porcentaje del IVA
+  )
+
+# Calculamos el porcentaje promedio de IVA para todos los tickets.
+porcentaje_iva_promedio <- ticket_con_iva %>%
+  summarise(porcentaje_promedio = mean(porcentaje_iva, na.rm = TRUE))
+
+porcentaje_iva_promedio
+
+```
+
+
+  -   ¿Hay productos que se compran sistemáticamente juntos (patrones de compra)?
+  
+```{r}
+# Generar pares de productos comprados juntos
+pares_lista <- productos_global %>%
+  group_by(factura_simplificada) %>%
+  summarise(productos = list(unique(Descripcion)), .groups = "drop") %>%
+  filter(lengths(productos) >= 2) %>% # Filtrar tickets con al menos 2 productos
+  pull(productos) # Extraer solo la lista de productos
+
+# Generar todas las combinaciones de productos por factura
+pares <- unlist(
+  lapply(pares_lista, function(x) {
+    combn(x, 2, FUN = function(par) paste(sort(par), collapse = " + "), simplify = TRUE)
+  }),
+  use.names = FALSE
+)
+
+# Contar frecuencia de cada par
+pares_frecuentes <- as.data.frame(table(pares)) %>%
+  arrange(desc(Freq))
+
+# Mostrar los pares más frecuentes
+head(pares_frecuentes, 10)
+```
+
+  -   ¿Cuánto gasta en promedio una persona en productos de limpieza por ticket?
+  
+```{r}
+
+# Filtramos productos de limpieza por palabras clave
+productos_limpieza <- productos_global %>%
+  filter(str_detect(tolower(Descripcion), "fregar|bayeta|multiusos|escurridor|limpieza|agua mineral|fibra|friegasuelos|basura|palo|fregona|detergente|suavizante|desinfectante"))
+
+# Sumamos el gasto por ticket para esos productos
+gasto_limpieza_por_ticket <- productos_limpieza %>%
+  group_by(factura_simplificada) %>%
+  summarise(gasto_total = sum(as.numeric(P.Unit), na.rm = TRUE))  
+
+# Calculamos el gasto promedio
+gasto_promedio_limpieza <- mean(gasto_limpieza_por_ticket$gasto_total)
+
+print(paste("Gasto promedio en productos de limpieza por ticket:", round(gasto_promedio_limpieza, 2)))
+
+```
+
+  -   ¿Qué producto ha tenido más variación de precio a lo largo del tiempo?
+  
+```{r, eval=FALSE}
+# Unimos productos con sus fechas y filtramos datos válidos
+productos_con_fecha <- productos_global %>%
+  left_join(
+    tickets_global %>% select(factura_simplificada, fecha),
+    by = "factura_simplificada"
+  ) %>%
+  filter(!is.na(P.Unit)) %>%
+  mutate(fecha = as.Date(fecha, format = "%d/%m/%Y"))
+
+# Calculamos el rango de precios por producto, solo si aparece al menos 3 veces
+variacion_precios <- productos_con_fecha %>%
+  group_by(Descripcion) %>%
+  filter(n() >= 3) %>%  # Al menos 3 apariciones
+  summarise(
+    rango = max(P.Unit, na.rm = TRUE) - min(P.Unit, na.rm = TRUE)
+  ) %>%
+  arrange(desc(rango)) %>%
+  head(10)
+
+# Mostramos los productos con mayor variación de precio
+print("Productos con mayor variación de precio (rango):")
+print(variacion_precios)
+
+```
+
+  -   ¿Cuáles son los productos más comprados en total y cuál es su gasto acumulado?
+
+```{r, eval=FALSE}
+
+# Contar cuántas veces se compró cada producto y cuánto se ha gastado en total en cada uno
+productos_global %>%
+  group_by(Descripcion) %>%
+  summarise(
+    veces_comprado = n(),
+    gasto_total = sum(P.Unit, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(veces_comprado)) %>%
+  head(20) # Mostrar los 20 más comprados
+
+
+```
+
+  -   ¿Se puede detectar algún cambio en los hábitos de consumo antes y después de periodos vacacionales?
+  
+```{r, eval=FALSE}
+
+# Añadir fechas a los productos y clasificar cada compra según su periodo (pre-vacacional, vacacional, etc.)
+gasto_por_periodo <- productos_global %>%
+  left_join(tickets_global %>% select(factura_simplificada, fecha), by = "factura_simplificada") %>%
+  mutate(fecha = as.Date(fecha, format = "%d/%m/%Y")) %>%
+  mutate(tipo_periodo = case_when(
+    fecha >= as.Date("2023-12-05") & fecha < as.Date("2023-12-20") ~ "Pre-vacacional",
+    fecha >= as.Date("2023-12-20") & fecha <= as.Date("2024-01-07") ~ "Vacacional",
+    fecha > as.Date("2024-01-07") & fecha <= as.Date("2024-01-22") ~ "Post-vacacional",
+    TRUE ~ "Normal"
+  )) %>%
+  
+# Calcular el gasto total por ticket y clasificarlo por tipo de periodo
+  group_by(factura_simplificada, tipo_periodo) %>%
+  summarise(total_ticket = sum(P.Unit, na.rm = TRUE), .groups = "drop") %>%
+# Calcular el gasto promedio por tipo de periodo
+  group_by(tipo_periodo) %>%
+  summarise(
+    gasto_promedio = mean(total_ticket, na.rm = TRUE),
+    tickets = n()
+  ) %>%
+  arrange(desc(gasto_promedio))
+
+print(gasto_por_periodo)
+```
+
+Además, gracias a la estructura de datos generada por el algoritmo en R, se podrán realizar análisis a gran escala sobre patrones de compra, como la frecuencia de compra de ciertos productos (por ejemplo, diferentes tipos de chocolate), identificar preferencias de los consumidores y realizar predicciones sobre comportamientos de compra futuros. Este enfoque también permite identificar posibles variaciones en los precios debido a factores como promociones, descuentos o cambios en la política fiscal.
+
+En resumen, el proyecto no solo busca desarrollar una herramienta técnica que facilite la lectura y el análisis de tickets en PDF, sino que tiene un enfoque orientado a la toma de decisiones basada en datos. Al poder analizar grandes volúmenes de tickets y obtener datos estructurados, se abren múltiples posibilidades para estudios de mercado, optimización de precios y una comprensión más profunda de los hábitos de consumo.
+
+
+

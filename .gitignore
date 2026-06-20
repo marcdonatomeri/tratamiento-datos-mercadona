@@ -1,0 +1,20 @@
+# R / RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj.user
+
+# Salidas de knitr / RMarkdown
+*_cache/
+*_files/
+
+# LaTeX (compilación de la memoria)
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+
+# OS
+.DS_Store
