@@ -3,6 +3,13 @@
 # Lo siguiente se excluye del cálculo de lenguajes por ser plantillas de
 # terceros o salidas generadas.
 
+# El código R del proyecto vive dentro de los .Rmd: forzar que cuenten como R.
+*.Rmd linguist-language=R
+*.Rmd linguist-detectable=true
+
+# Bibliografía LaTeX: no es código
+*.bib linguist-vendored
+
 # Plantilla LaTeX de MDPI (archivos de terceros, no es código propio)
 "Memoria Proyecto TD/Definitions/**" linguist-vendored
 
